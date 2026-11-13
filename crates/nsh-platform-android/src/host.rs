@@ -1271,11 +1271,24 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
         _ => Idiom::Phone,
     };
     // `NshView`'s activity: resumed, paused or stopped.
+    #[cfg(feature = "dev")]
+    let was = environment.lifecycle;
     environment.lifecycle = match v[13] as u8 {
         1 => Lifecycle::Inactive,
         2 => Lifecycle::Background,
         _ => Lifecycle::Active,
     };
+    #[cfg(feature = "dev")]
+    if environment.lifecycle != was
+        && let Some(dev) = host.dev.lock().ok().as_ref().and_then(|d| d.as_ref())
+    {
+        // A build held while the app ran loads when it comes back.
+        dev.lifecycle(
+            host,
+            environment.lifecycle == Lifecycle::Background,
+            environment.lifecycle == Lifecycle::Active,
+        );
+    }
     if let Ok(tag) = env.get_string(&locale) {
         environment.locale = Locale::parse(&String::from(tag)).unwrap_or_default();
     }

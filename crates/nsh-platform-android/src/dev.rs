@@ -45,6 +45,15 @@ struct DevState {
     running: Option<(u64, u64)>,
     /// The latest bundle, for reloads.
     latest: Option<Bundle>,
+    /// A build that arrived while the app ran (a reconnect after a missed
+    /// build): loaded when the app next comes back to the foreground, so a
+    /// full reload never lands under the user's finger.
+    held: Option<(u64, u64, Bundle, Limits)>,
+    /// The app shows an error (a build that failed, an uncaught error): the
+    /// next build loads at once.
+    failed: bool,
+    /// The app went to the background since the last load.
+    away: bool,
 }
 
 impl DevSession {
@@ -108,14 +117,57 @@ impl DevSession {
     }
 
     pub(crate) fn show_error(&self, host: &Host, title: &str, message: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.failed = true;
+        }
         host.dev_error(Some((title, message)), false);
+    }
+
+    /// The app's activity went to the background (`Lifecycle::Background`)
+    /// or came back (`Lifecycle::Active`): back from the background, a held
+    /// build loads (on its own thread, as [`DevSession::reload`]).
+    pub(crate) fn lifecycle(&self, host: &Arc<Host>, background: bool, active: bool) {
+        let held = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if background {
+                state.away = true;
+                return;
+            }
+            if !active || !state.away {
+                return;
+            }
+            state.away = false;
+            let Some((session, version, bundle, limits)) = state.held.take() else {
+                return;
+            };
+            state.running = Some((session, version));
+            (version, bundle, limits)
+        };
+        let host = host.clone();
+        let _ = std::thread::Builder::new()
+            .name("nsh-dev-reload".into())
+            .spawn(move || {
+                let (version, bundle, limits) = held;
+                log::info!("loading build {version}, held while the app ran");
+                host.dev_error(None, false);
+                host.set_limits(limits);
+                host.load(bundle);
+            });
     }
 
     /// A hot update failed: loads the latest bundle from scratch (on its
     /// own thread: this is called on the engine thread, which the reload
     /// stops).
     pub(crate) fn reload(&self, host: &Arc<Host>) {
-        let latest = self.state.lock().ok().and_then(|s| s.latest.clone());
+        let latest = self.state.lock().ok().and_then(|mut s| {
+            // The latest is the held build when there is one: it runs now.
+            if let Some((session, version, ..)) = s.held.take() {
+                s.running = Some((session, version));
+            }
+            s.latest.clone()
+        });
         if let Some(bundle) = latest {
             let host = host.clone();
             let _ = std::thread::Builder::new()
@@ -152,13 +204,19 @@ fn handle(host: &Arc<Host>, state: &Mutex<DevState>, event: DevEvent) {
                 let mut state = state.lock().expect("dev state");
                 state.latest = None;
                 state.running = None;
+                state.held = None;
+                state.failed = false;
             }
             host.dev_error(None, false);
             host.load(root);
         }
         DevEvent::Building => {}
-        DevEvent::BuildFailed(message) => host.dev_error(Some(("Build failed", &message)), false),
+        DevEvent::BuildFailed(message) => {
+            state.lock().expect("dev state").failed = true;
+            host.dev_error(Some(("Build failed", &message)), false)
+        }
         DevEvent::CannotRun { message, .. } => {
+            state.lock().expect("dev state").failed = true;
             host.dev_status(None);
             host.dev_error(Some(("This host cannot run the app", &message)), true)
         }
@@ -204,14 +262,28 @@ fn handle(host: &Arc<Host>, state: &Mutex<DevState>, event: DevEvent) {
                 Err(err) => return host.dev_error(Some(("Invalid limits", &err)), true),
             };
             host.dev_status(None);
-            let running = {
+            {
                 let mut state = state.lock().expect("dev state");
                 state.latest = Some(bundle.clone());
-                state.running.replace((session, version))
-            };
-            // Already there through a hot update.
-            if running == Some((session, version)) {
-                return;
+                // Already there through a hot update.
+                if state.running == Some((session, version)) {
+                    state.held = None;
+                    return;
+                }
+                // A newer build while the app runs without an error (a
+                // reconnect after a missed build): held until the app next
+                // comes back to the foreground instead of reloading under
+                // the user's finger.
+                if state.running.is_some() && !state.failed {
+                    log::info!(
+                        "build {version} arrived while the app runs: it loads when the app comes back to the foreground"
+                    );
+                    state.held = Some((session, version, bundle, limits));
+                    return;
+                }
+                state.running = Some((session, version));
+                state.held = None;
+                state.failed = false;
             }
             log::info!("loading build {version}");
             host.dev_error(None, false);
