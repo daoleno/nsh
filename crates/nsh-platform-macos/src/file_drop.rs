@@ -545,14 +545,22 @@ impl Promised {
 }
 
 /// The `file:` URL a dragged or copied item names: its path's
-/// ([`local_file_uri`]), or a file reference (`file:///.file/id=…`) that
-/// does not resolve as it is (the file is gone, or the system refuses this
-/// app its folder), so the app still hears of the file and can say it could
-/// not be read.
+/// ([`local_file_uri`]), or, when that does not resolve (a file reference
+/// to a file that is gone, a file the system refuses this app), the local
+/// `file:` URL as the item gave it, so the app still hears of the file and
+/// can say it could not be read.
 pub(crate) fn item_file_uri(uri: &NSString) -> Option<String> {
     local_file_uri(uri).or_else(|| {
-        let uri = uri.to_string();
-        uri.starts_with("file:///.file/id=").then_some(uri)
+        let url = NSURL::URLWithString(uri)?;
+        let local = url.isFileURL()
+            && url
+                .path()
+                .is_some_and(|path| path.to_string().starts_with('/'))
+            && url.host().is_none_or(|host| {
+                let host = host.to_string();
+                host.is_empty() || host.eq_ignore_ascii_case("localhost")
+            });
+        local.then(|| uri.to_string())
     })
 }
 
