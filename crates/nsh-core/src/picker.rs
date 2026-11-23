@@ -682,9 +682,101 @@ fn read_paths(
     finish_files(request, files)
 }
 
+/// The most bytes one drop or paste of files reads, its files together
+/// ([`read_dropped_files`]).
+pub const MAX_DROPPED_BYTES: u64 = MAX_PICKED_FILE_BYTES;
+
+/// Reads the regular files at `paths` that a drop or a paste delivered, in
+/// order: up to [`MAX_PICKED`] files and [`MAX_DROPPED_BYTES`] in all. A
+/// file past what is left of the budget is listed `TooLarge`, without its
+/// bytes, and smaller files after it are still read. Directories are
+/// skipped; a file that cannot be read (gone, or refused by the system) is
+/// left out. No `fs` grant is consulted: the user gave these files, as a
+/// pick does.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_dropped_files(paths: &[std::path::PathBuf]) -> Vec<PickedFile> {
+    read_dropped(paths, MAX_DROPPED_BYTES)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_dropped(paths: &[std::path::PathBuf], budget: u64) -> Vec<PickedFile> {
+    let mut left = budget;
+    let mut files = Vec::new();
+    for path in paths {
+        if files.len() >= MAX_PICKED as usize {
+            break;
+        }
+        let Ok(metadata) = std::fs::metadata(path)
+            .inspect_err(|e| log::warn!("cannot read the dropped {}: {e}", path.display()))
+        else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if metadata.len() > left {
+            log::warn!(
+                "the dropped {} is not read: past the drop's {budget} bytes",
+                path.display()
+            );
+            let mut file = PickedFile::too_large(name, "", metadata.len());
+            file.last_modified = metadata.modified().ok();
+            files.push(file);
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path)
+            .inspect_err(|e| log::warn!("cannot read the dropped {}: {e}", path.display()))
+        else {
+            continue;
+        };
+        left = left.saturating_sub(bytes.len() as u64);
+        files.push(PickedFile {
+            name,
+            data: ImageData::new(bytes),
+            last_modified: metadata.modified().ok(),
+            ..PickedFile::default()
+        });
+    }
+    finish_files(&FilePickRequest::new(true, 0), files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_files_are_read_in_order_within_the_budget() {
+        let dir = std::env::temp_dir().join(format!("nsh-dropped-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("folder")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("big.bin"), [7u8; 12]).unwrap();
+        std::fs::write(dir.join("c.png"), b"\x89PNG\r\n\x1a\nx").unwrap();
+        let paths = ["a.txt", "folder", "gone.txt", "big.bin", "c.png"].map(|n| dir.join(n));
+        let files = read_dropped(&paths, 16);
+        let seen: Vec<_> = files
+            .iter()
+            .map(|f| (f.name.as_str(), f.mime.as_str(), f.status, f.len))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("a.txt", "text/plain", PickedStatus::Read, 5),
+                (
+                    "big.bin",
+                    "application/octet-stream",
+                    PickedStatus::TooLarge,
+                    12
+                ),
+                ("c.png", "image/png", PickedStatus::Read, 9),
+            ]
+        );
+        assert_eq!(&*files[0].data, b"hello");
+        assert!(files[1].data.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn px(w: i32, h: i32) -> Size<DevicePixels> {
         Size::new(DevicePixels(w), DevicePixels(h))

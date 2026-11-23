@@ -1,7 +1,11 @@
 //! AppKit file-list drops, routed by the same hit testing as pointer input.
-use std::cell::RefCell;
+//! A drop hands the files over with their contents
+//! ([`nsh_core::FileContents`], read on a thread of its own as a pick's
+//! are) beside their URLs, so the app reads what the user dropped without
+//! an `fs` grant.
+use std::{cell::RefCell, path::PathBuf};
 
-use nsh_core::{EventKind, EventPayload};
+use nsh_core::{EventKind, EventPayload, FileContents, picker::read_dropped_files};
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSView};
 use objc2_foundation::{NSArray, NSString, NSURL};
@@ -186,24 +190,42 @@ pub(crate) fn perform(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingI
 
 /// Drops `uris` at `x`, `y` (the event root's coordinates) on the view
 /// there that listens: whether one took them. The test agent's `dropFiles`
-/// comes here too.
+/// comes here too. The drag ends now (`onFileDragLeave`); the drop
+/// (`onFileDrop`) follows from a thread once the regular files are read
+/// ([`read_dropped_files`]), with the URLs, so a file that could not be
+/// read (refused by the system, gone) is still named.
 pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) -> bool {
     let Some(destination) = input::file_drop_target(surface, x, y) else {
         clear(surface);
         return false;
     };
-    if uris.is_empty() {
+    let Some(control) = surface.event_control().filter(|_| !uris.is_empty()) else {
         clear(surface);
         return false;
-    }
+    };
     *surface.file_drop.uris.borrow_mut() = uris.clone();
     set_target(surface, Some(destination.clone()));
-    surface.event(
-        destination.id(),
-        EventKind::FileDrop,
-        EventPayload::FileDrop(uris),
-    );
     clear(surface);
+    let id = destination.id();
+    let spawned = std::thread::Builder::new()
+        .name("nsh-file-drop".into())
+        .spawn(move || {
+            let paths: Vec<PathBuf> = uris.iter().filter_map(|uri| file_path(uri)).collect();
+            let mime_types = uris
+                .iter()
+                .map(|uri| nsh_core::platform::file_mime_type(uri).to_owned())
+                .collect();
+            let drop =
+                FileContents::new(read_dropped_files(&paths), mime_types, None).with_uris(uris);
+            control.dispatch_event(
+                id,
+                EventKind::FileDrop,
+                EventPayload::FileContents(Box::new(drop)),
+            );
+        });
+    if let Err(e) = spawned {
+        log::warn!("cannot read the dropped files: {e}");
+    }
     true
 }
 
@@ -250,10 +272,39 @@ fn read_uris(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
             items
                 .iter()
                 .filter_map(|item| item.stringForType(&kind))
-                .filter_map(|uri| local_file_uri(&uri))
+                .filter_map(|uri| item_file_uri(&uri))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+/// The local path of `file:` URL `uri`.
+pub(crate) fn file_path(uri: &str) -> Option<PathBuf> {
+    let url = NSURL::URLWithString(&NSString::from_str(uri))?;
+    url.isFileURL()
+        .then(|| url.path())
+        .flatten()
+        .map(|path| PathBuf::from(path.to_string()))
+}
+
+/// The `file:` URL a dragged or copied item names: its path's
+/// ([`local_file_uri`]), or, when that does not resolve (a file reference
+/// to a file that is gone, a file the system refuses this app), the local
+/// `file:` URL as the item gave it, so the app still hears of the file and
+/// can say it could not be read.
+pub(crate) fn item_file_uri(uri: &NSString) -> Option<String> {
+    local_file_uri(uri).or_else(|| {
+        let url = NSURL::URLWithString(uri)?;
+        let local = url.isFileURL()
+            && url
+                .path()
+                .is_some_and(|path| path.to_string().starts_with('/'))
+            && url.host().is_none_or(|host| {
+                let host = host.to_string();
+                host.is_empty() || host.eq_ignore_ascii_case("localhost")
+            });
+        local.then(|| uri.to_string())
+    })
 }
 
 /// The `file:` URL with the path of the local file or directory `uri`
@@ -295,6 +346,15 @@ mod tests {
             url.absoluteString().map(|s| s.to_string())
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn file_urls_become_their_paths() {
+        assert_eq!(
+            file_path("file:///tmp/a%20b%E4%B8%AD.png"),
+            Some(PathBuf::from("/tmp/a b中.png"))
+        );
+        assert_eq!(file_path("https://example.com/a.png"), None);
     }
 
     #[test]
@@ -355,8 +415,14 @@ mod tests {
             local_file_uri(&reference).as_deref(),
             Some(expected.as_str())
         );
-        // A reference to nothing (the file is gone) is no file.
+        // A reference to nothing (the file is gone) is no file, but the
+        // item still names one, which could not be read.
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(local_file_uri(&reference), None);
+        assert_eq!(item_file_uri(&reference), Some(reference.to_string()));
+        assert_eq!(
+            item_file_uri(&NSString::from_str("https://example.com/a")),
+            None
+        );
     }
 }

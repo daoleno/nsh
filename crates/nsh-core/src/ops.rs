@@ -1199,6 +1199,11 @@ pub struct FileContents {
     pub mime_types: Vec<String>,
     /// Where the files were let go, in the window's coordinates.
     pub page_position: Option<Point<Points>>,
+    /// The local files' and directories' `file:` URLs, where the drag named
+    /// them (a desktop's file manager); empty on the Web and for contents
+    /// with no path (an image dragged out of a page, a promised file). A
+    /// named file that could not be read is in `uris` and not in `files`.
+    pub uris: Vec<String>,
 }
 
 impl FileContents {
@@ -1212,7 +1217,14 @@ impl FileContents {
             files,
             mime_types,
             page_position,
+            uris: Vec::new(),
         }
+    }
+
+    /// These contents with the local files' `uris` beside them.
+    pub fn with_uris(mut self, uris: Vec<String>) -> Self {
+        self.uris = uris;
+        self
     }
 }
 
