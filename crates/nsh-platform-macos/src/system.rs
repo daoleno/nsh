@@ -1574,7 +1574,7 @@ pub(crate) fn has_pasted_files(pasteboard: &NSPasteboard) -> bool {
 }
 
 /// Encoded image `bytes` (a TIFF) encoded again as PNG.
-fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
     let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(bytes))?;
     // SAFETY: an empty dictionary of properties is valid for every type.
     let png = unsafe {
