@@ -1263,7 +1263,7 @@ pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
         .unwrap_or_default()
     {
         if let Some(uri) = item.stringForType(&file_url) {
-            paste.uris.extend(crate::file_drop::local_file_uri(&uri));
+            paste.uris.extend(crate::file_drop::item_file_uri(&uri));
             continue;
         }
         let image = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
@@ -1424,7 +1424,7 @@ pub(crate) fn holds_only_files(pasteboard: &NSPasteboard) -> bool {
         !items.is_empty()
             && items.iter().all(|item| {
                 item.stringForType(&kind)
-                    .is_some_and(|uri| crate::file_drop::local_file_uri(&uri).is_some())
+                    .is_some_and(|uri| crate::file_drop::item_file_uri(&uri).is_some())
             })
     })
 }

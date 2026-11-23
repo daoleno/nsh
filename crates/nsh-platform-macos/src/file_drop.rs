@@ -403,7 +403,7 @@ fn read_uris(board: &NSPasteboard) -> Vec<String> {
             items
                 .iter()
                 .filter_map(|item| item.stringForType(&kind))
-                .filter_map(|uri| local_file_uri(&uri))
+                .filter_map(|uri| item_file_uri(&uri))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
@@ -544,6 +544,18 @@ impl Promised {
     }
 }
 
+/// The `file:` URL a dragged or copied item names: its path's
+/// ([`local_file_uri`]), or a file reference (`file:///.file/id=…`) that
+/// does not resolve as it is (the file is gone, or the system refuses this
+/// app its folder), so the app still hears of the file and can say it could
+/// not be read.
+pub(crate) fn item_file_uri(uri: &NSString) -> Option<String> {
+    local_file_uri(uri).or_else(|| {
+        let uri = uri.to_string();
+        uri.starts_with("file:///.file/id=").then_some(uri)
+    })
+}
+
 /// The `file:` URL with the path of the local file or directory `uri`
 /// names, if it names one. Finder puts file reference URLs
 /// (`file:///.file/id=…`) on drag and copy pasteboards: they become the
@@ -643,8 +655,14 @@ mod tests {
             local_file_uri(&reference).as_deref(),
             Some(expected.as_str())
         );
-        // A reference to nothing (the file is gone) is no file.
+        // A reference to nothing (the file is gone) is no file, but the
+        // item still names one, which could not be read.
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(local_file_uri(&reference), None);
+        assert_eq!(item_file_uri(&reference), Some(reference.to_string()));
+        assert_eq!(
+            item_file_uri(&NSString::from_str("https://example.com/a")),
+            None
+        );
     }
 }
