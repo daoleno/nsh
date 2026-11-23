@@ -23,6 +23,9 @@ pub struct FileDropEvent {
     /// Where the files were let go, in the window's coordinates (TS:
     /// `pagePosition`), on backends that know it (Linux).
     pub page_position: Option<Point<Points>>,
+    /// The dropped regular files with their contents, where the backend
+    /// reads them ([`crate::FileContents`]); empty where only `uris` come.
+    pub files: Vec<crate::picker::PickedFile>,
 }
 
 /// Local files or directories a drag offers to an element while it enters
@@ -770,6 +773,7 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
             uris: uris.clone(),
             mime_types: mime_types(uris),
             page_position: None,
+            files: Vec::new(),
         })),
         EventPayload::FileDropAt {
             uris,
@@ -778,6 +782,13 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
             uris: uris.clone(),
             mime_types: mime_types(uris),
             page_position: Some(*page_position),
+            files: Vec::new(),
+        })),
+        EventPayload::FileContents(drop) => Some(Cow::Owned(FileDropEvent {
+            uris: drop.uris.clone(),
+            mime_types: drop.mime_types.clone(),
+            page_position: drop.page_position,
+            files: drop.files.clone(),
         })),
         _ => None,
     }
@@ -791,6 +802,10 @@ pub(crate) fn file_drag(p: &EventPayload) -> Option<Cow<'_, FileDragEvent>> {
                 mime_types: mime_types(uris),
             }))
         }
+        EventPayload::FileContents(drag) => Some(Cow::Owned(FileDragEvent {
+            uris: drag.uris.clone(),
+            mime_types: drag.mime_types.clone(),
+        })),
         _ => None,
     }
 }

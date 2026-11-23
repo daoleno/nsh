@@ -1354,8 +1354,55 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             }
             obj.set("uris", list)?;
             obj.set("mimeTypes", types)?;
+            obj.set("files", rquickjs::Array::new(cx.clone())?)?;
             if let EventPayload::FileDropAt { page_position, .. } = payload {
                 obj.set("pagePosition", point_object(cx, *page_position)?)?;
+            }
+        }
+        // `PickedFile`s: each read one's `File` shares the dropped bytes.
+        EventPayload::FileContents(drop) => {
+            let uris = rquickjs::Array::new(cx.clone())?;
+            for (index, uri) in drop.uris.iter().enumerate() {
+                uris.set(index, uri.as_str())?;
+            }
+            obj.set("uris", uris)?;
+            let types = rquickjs::Array::new(cx.clone())?;
+            for (index, mime) in drop.mime_types.iter().enumerate() {
+                types.set(index, mime.as_str())?;
+            }
+            obj.set("mimeTypes", types)?;
+            let files = rquickjs::Array::new(cx.clone())?;
+            for (index, file) in drop.files.iter().enumerate() {
+                let entry = rquickjs::Object::new(cx.clone())?;
+                if file.status == nsh_core::picker::PickedStatus::TooLarge {
+                    entry.set("file", Value::new_null(cx.clone()))?;
+                    entry.set("status", "tooLarge")?;
+                } else {
+                    let blob = crate::web::blob::Blob::shared(file.data.clone(), file.mime.clone());
+                    let modified = file
+                        .last_modified
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or_else(crate::web::blob::now_ms, |d| d.as_millis() as f64);
+                    let made = crate::web::blob::new_file(
+                        cx.as_raw().as_ptr(),
+                        blob,
+                        file.name.clone(),
+                        modified,
+                    )
+                    .map_err(|_| rquickjs::Error::Exception)?;
+                    // SAFETY: an owned value of this context, handed over.
+                    let value = unsafe { Value::from_raw(cx.clone(), made.take()) };
+                    entry.set("file", value)?;
+                    entry.set("status", "read")?;
+                }
+                entry.set("name", file.name.as_str())?;
+                entry.set("type", file.mime.as_str())?;
+                entry.set("size", file.len as f64)?;
+                files.set(index, entry)?;
+            }
+            obj.set("files", files)?;
+            if let Some(at) = drop.page_position {
+                obj.set("pagePosition", point_object(cx, at)?)?;
             }
         }
         // The bytes cross natively: each file is a `File` over them.
@@ -2410,6 +2457,55 @@ const report = (v) => text(String(v));
                     "enter file:///tmp/next.png image/png",
                     "drop file:///tmp/next.png",
                     "old"
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn file_drop_contents_are_files_beside_the_uris() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { element, prop } from "nsh:rt";
+            globalThis.seen = [];
+            const target = element("view");
+            prop(target, "onFileDrop", (e) => {
+                seen.push("uris " + e.uris.join(";") + " types " + e.mimeTypes.join(";"));
+                for (const f of e.files) {
+                    seen.push([f.status, f.name, f.type, f.size, f.file ? f.file.name + " " + f.file.size + " " + f.file.type : "null"].join(" "));
+                }
+            });
+        "#,
+        )
+        .unwrap();
+        let read = nsh_core::picker::PickedFile::new(
+            "a b.png",
+            "image/png",
+            nsh_core::ImageData::new(vec![1u8, 2, 3]),
+        );
+        let mut read = read;
+        read.len = 3;
+        let big = nsh_core::picker::PickedFile::too_large("big.mov", "video/quicktime", 9);
+        let drop = nsh_core::FileContents::new(
+            vec![read, big],
+            vec!["file:///tmp/a%20b.png".into(), "file:///tmp/big.mov".into()],
+            vec!["image/png".into(), "video/quicktime".into()],
+            None,
+        );
+        host.dispatch_event(
+            2,
+            EventKind::FileDrop,
+            &EventPayload::FileContents(Box::new(drop)),
+        );
+        host.cx.with(|cx| {
+            let seen: Vec<String> = cx.globals().get("seen").unwrap();
+            assert_eq!(
+                seen,
+                [
+                    "uris file:///tmp/a%20b.png;file:///tmp/big.mov types image/png;video/quicktime",
+                    "read a b.png image/png 3 a b.png 3 image/png",
+                    "tooLarge big.mov video/quicktime 9 null",
                 ]
             );
         });

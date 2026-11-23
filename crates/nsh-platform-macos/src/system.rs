@@ -1416,8 +1416,21 @@ pub(crate) fn has_pasted_files(pasteboard: &NSPasteboard) -> bool {
     })
 }
 
+/// Whether every item of `pasteboard` is a local file (a Finder copy, with
+/// the files' names as text beside them).
+pub(crate) fn holds_only_files(pasteboard: &NSPasteboard) -> bool {
+    let kind = NSString::from_str("public.file-url");
+    pasteboard.pasteboardItems().is_some_and(|items| {
+        !items.is_empty()
+            && items.iter().all(|item| {
+                item.stringForType(&kind)
+                    .is_some_and(|uri| crate::file_drop::local_file_uri(&uri).is_some())
+            })
+    })
+}
+
 /// Encoded image `bytes` (a TIFF) encoded again as PNG.
-fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
     let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(bytes))?;
     // SAFETY: an empty dictionary of properties is valid for every type.
     let png = unsafe {

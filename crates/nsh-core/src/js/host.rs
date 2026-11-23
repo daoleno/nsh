@@ -806,8 +806,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::FileDrop,
         on::ALL,
-        "(e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number } }) => void",
-        "Local file URLs dropped on this desktop destination, with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux).",
+        "(e: { uris: string[]; mimeTypes: string[]; files: { file: File | null; name: string; type: string; size: number; status: \"read\" | \"tooLarge\" }[]; pagePosition?: { x: number; y: number } }) => void",
+        "Local file URLs dropped on this desktop destination, with each one's MIME type by its name (`\"\"` when the name says none); `files`: the dropped regular files with their contents where the backend reads them (macOS: also an image or a promised file dragged out of another app, with no URL), up to 100 files and 512 MiB per drop, a file past that `tooLarge` and one that could not be read left out; `pagePosition`: where, in the window's coordinates, on backends that know it (Linux).",
     ),
     (
         EventKind::Layout,
