@@ -552,16 +552,19 @@ impl Promised {
 /// can say it could not be read.
 pub(crate) fn item_file_uri(uri: &NSString) -> Option<String> {
     local_file_uri(uri).or_else(|| {
-        let url = NSURL::URLWithString(uri)?;
-        let local = url.isFileURL()
-            && url
-                .path()
-                .is_some_and(|path| path.to_string().starts_with('/'))
-            && url.host().is_none_or(|host| {
-                let host = host.to_string();
-                host.is_empty() || host.eq_ignore_ascii_case("localhost")
-            });
-        local.then(|| uri.to_string())
+        // Read off the text: `NSURL.path` resolves a file reference, and is
+        // nil once its file is gone.
+        let text = uri.to_string();
+        let rest = text
+            .strip_prefix("file://")
+            .or_else(|| text.strip_prefix("FILE://"))?;
+        let path = match rest.get(..9) {
+            Some(host) if host.eq_ignore_ascii_case("localhost") => &rest[9..],
+            _ => rest,
+        };
+        let local =
+            path.starts_with('/') && NSURL::URLWithString(uri).is_some_and(|url| url.isFileURL());
+        local.then_some(text)
     })
 }
 
@@ -671,6 +674,16 @@ mod tests {
         assert_eq!(item_file_uri(&reference), Some(reference.to_string()));
         assert_eq!(
             item_file_uri(&NSString::from_str("https://example.com/a")),
+            None
+        );
+        // A local path that is gone is kept as given; another host's is not.
+        let gone = "file://localhost/tmp/nsh%20gone%20file.png";
+        assert_eq!(
+            item_file_uri(&NSString::from_str(gone)).as_deref(),
+            Some(gone)
+        );
+        assert_eq!(
+            item_file_uri(&NSString::from_str("file://server/tmp/a.png")),
             None
         );
     }
