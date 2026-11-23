@@ -185,7 +185,14 @@ pub(crate) fn perform(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingI
     let point = input::event_root(surface)
         .ns()
         .convertPoint_fromView(sender.draggingLocation(), None);
-    drop_uris(surface, point.x as f32, point.y as f32, read_uris(sender))
+    // A file that went (or that the system stopped this app from reading)
+    // since the drag entered is left off the pasteboard now: the drop is
+    // what entered, so the app hears of the file and can say it could not
+    // be read.
+    let uris = Some(read_uris(sender))
+        .filter(|uris| !uris.is_empty())
+        .unwrap_or_else(|| surface.file_drop.uris.borrow().clone());
+    drop_uris(surface, point.x as f32, point.y as f32, uris)
 }
 
 /// Drops `uris` at `x`, `y` (the event root's coordinates) on the view
