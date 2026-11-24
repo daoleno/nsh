@@ -116,6 +116,11 @@ final class TextBox extends android.view.ViewGroup implements Node {
         }
     }
 
+    /** Where its characters are: {@link TextLayouts#geometry} of its layout. */
+    Layout geometry() {
+        return TextLayouts.geometry(layout);
+    }
+
     Layout layout() {
         return layout;
     }
@@ -180,8 +185,9 @@ final class TextBox extends android.view.ViewGroup implements Node {
                 downX = e.getX();
                 downY = e.getY();
                 extending = false;
-                // A tap on the text ends its selection (a long press makes a new one).
-                clearSelection();
+                // A long press makes a new selection; a tap ends this one
+                // (`Mounter.touchUp`), a scroll keeps it.
+                removeCallbacks(longPress);
                 postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout());
                 break;
             case android.view.MotionEvent.ACTION_MOVE: {
@@ -284,6 +290,8 @@ final class TextBox extends android.view.ViewGroup implements Node {
             // One selection per surface.
             if (mounter.selectedArea != null) mounter.selectedArea.clear();
             mounter.selectedText = this;
+            mounter.keepSelection();
+            mounter.updateBack();
         }
         placeHandles();
         if (toolbar) showToolbar();
@@ -300,7 +308,10 @@ final class TextBox extends android.view.ViewGroup implements Node {
         startHandle.dismiss();
         endHandle.dismiss();
         getViewTreeObserver().removeOnPreDrawListener(follow);
-        if (mounter.selectedText == this) mounter.selectedText = null;
+        if (mounter.selectedText == this) {
+            mounter.selectedText = null;
+            mounter.updateBack();
+        }
         android.view.ActionMode m = mode;
         mode = null;
         if (m != null) m.finish();
@@ -408,7 +419,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
                     return;
                 }
                 android.graphics.RectF bounds = new android.graphics.RectF();
-                layout.getSelectionPath(selStart, selEnd, selectionPath);
+                geometry().getSelectionPath(selStart, selEnd, selectionPath);
                 selectionPath.computeBounds(bounds, true);
                 out.set(Math.round(contentX + bounds.left), Math.round(contentY + bounds.top),
                         Math.round(contentX + bounds.right), Math.round(contentY + bounds.bottom));
@@ -426,6 +437,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
         }
         int[] at = new int[2];
         getLocationInWindow(at);
+        Layout layout = geometry();
         int startLine = layout.getLineForOffset(selStart);
         startHandle.place(at[0] + contentX + layout.getPrimaryHorizontal(selStart),
                 at[1] + contentY + layout.getLineBottom(startLine));
@@ -579,7 +591,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
             }
             highlightPaint.setColor(color);
         }
-        layout.getSelectionPath(start, end, selectionPath);
+        geometry().getSelectionPath(start, end, selectionPath);
         canvas.drawPath(selectionPath, highlightPaint);
     }
 
