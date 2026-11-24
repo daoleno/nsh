@@ -9,6 +9,8 @@
 //!   prebuilt runtime, so app developers never need Rust.
 //! - `ios-embed`: only the iOS embedding SDK (`NativeShell.xcframework`,
 //!   `NativeShellDev.xcframework`) into `dist/nsh/embed/ios`.
+//! - `android-embed`: only the Android embedding SDK (`nsh.aar`,
+//!   `nsh-dev.aar`, every ABI) into `dist/nsh/embed/android`.
 //! - `web`: the WebAssembly runtime, its player and the website's demos
 //!   (`website/public/play` by default).
 //! - `emoji-data <version>`: `EmojiPicker`'s emoji from a release of
@@ -77,6 +79,8 @@ enum Task {
     Dist,
     /// Build only the iOS embedding XCFrameworks.
     IosEmbed(ios::Options),
+    /// Build only the Android embedding AARs.
+    AndroidEmbed,
     /// Build the WebAssembly runtime and the website's demos.
     Web {
         /// Output directory.
@@ -157,6 +161,7 @@ fn task(task: Task) -> anyhow::Result<()> {
         Task::ClippyAndroid => android::clippy(),
         Task::Dist => dist::dist(),
         Task::IosEmbed(options) => ios::build(options).map(|out| term::note(out.display())),
+        Task::AndroidEmbed => dist::android_embed(),
         Task::Web { out } => web::build(&out),
         Task::EmojiData { version } => emoji::generate(&version),
         Task::Compat { record } => compat::compat(match &record {

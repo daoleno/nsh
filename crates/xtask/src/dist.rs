@@ -51,6 +51,24 @@ const CATALYST: &str = "aarch64-apple-ios-macabi";
 /// and Mac Catalyst do not run.
 const WITH_IOS: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
+/// Only the Android embedding SDK, as `dist` makes it: `nsh.aar` and
+/// `nsh-dev.aar` (every ABI) into `dist/nsh/embed/android`.
+pub(crate) fn android_embed() -> anyhow::Result<()> {
+    let root = android::root();
+    let out = root.join("dist/nsh/embed/android");
+    let abis: Vec<String> = android::ABIS.iter().map(|a| a.to_string()).collect();
+    for dev in [false, true] {
+        let built = android::build(true, dev, &abis)?;
+        let aar = out.join(if dev { "nsh-dev.aar" } else { "nsh.aar" });
+        make_aar(&built, &abis, dev, &aar)?;
+        term::done(format!(
+            "packed {}",
+            aar.strip_prefix(&root).unwrap_or(&aar).display()
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn dist() -> anyhow::Result<()> {
     let root = android::root();
     let out = root.join("dist/nsh");

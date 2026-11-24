@@ -1,0 +1,122 @@
+name: Mewla embedding SDKs
+
+# Mewla's apps embed NSH from one commit of this line (mewla/*): the Mac app's crates by rev, the Android
+# AARs and the iOS XCFrameworks from here. Each commit pushed to the line gets the two embedding archives
+# release.yml makes (nsh-embed-android.zip, nsh-embed-ios.zip), built here once and published as the
+# prerelease mewla-<commit>, which Mewla's client/scripts/fetch-nsh.sh downloads and checks against the
+# checksums it pins. A commit that already has its release is not built again.
+on:
+  push:
+    branches: ["mewla/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mewla-embed-${{ github.sha }}
+
+env:
+  TAG: mewla-${{ github.sha }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if grep -qx nsh-embed-android.zip <<<"$assets" && grep -qx nsh-embed-ios.zip <<<"$assets"; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  android:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install the Android platform
+        run: |
+          if [[ ! -f "$ANDROID_HOME/platforms/android-35/android.jar" ]]; then
+            sdkmanager=$(ls "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager* | head -1)
+            yes | "$sdkmanager" "platforms;android-35" > /dev/null || true
+          fi
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+          ls "$ANDROID_HOME/ndk"
+      - name: Build the AARs
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: cargo xtask android-embed
+      - name: Package
+        run: |
+          mkdir -p out/nsh-embed-android
+          cp dist/nsh/embed/android/nsh.aar dist/nsh/embed/android/nsh-dev.aar out/nsh-embed-android/
+          cd out && zip -qry nsh-embed-android.zip nsh-embed-android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsh-embed-android
+          path: out/nsh-embed-android.zip
+          if-no-files-found: error
+
+  ios:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check the Apple SDKs
+        run: |
+          xcodebuild -version
+          for sdk in iphoneos iphonesimulator; do
+            version=$(xcrun --sdk "$sdk" --show-sdk-version)
+            echo "$sdk SDK: $version"
+            (( ${version%%.*} >= 26 )) || { echo "::error::$sdk SDK 26 or newer is required"; exit 1; }
+          done
+      - name: Build the XCFrameworks
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: cargo xtask ios-embed
+      - name: Package
+        run: |
+          mkdir -p out/nsh-embed-ios
+          cp -R dist/nsh/embed/ios/. out/nsh-embed-ios/
+          cd out && zip -qry nsh-embed-ios.zip nsh-embed-ios
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsh-embed-ios
+          path: out/nsh-embed-ios.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish mewla-<commit>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd assets
+          sha256sum nsh-embed-android.zip nsh-embed-ios.zip | tee SHA256SUMS
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "$TAG" --notes "NSH embedding SDKs for Mewla, built from $GITHUB_SHA ($GITHUB_REF_NAME)."
+          gh release upload "$TAG" nsh-embed-android.zip nsh-embed-ios.zip SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
