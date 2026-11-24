@@ -1072,7 +1072,6 @@ impl Cx {
                     v.ps(px(LIST_INDENT))
                 }
             });
-            let content = self.blocks(content, &item.children, &key, tail && i + 1 == n);
             // Before the content when a box, inside it (placed over the
             // indent) when a bullet or a number.
             // In a terminal the marker is text before the content, always.
@@ -1081,9 +1080,14 @@ impl Cx {
             } else {
                 (None, Some(marker))
             };
+            // Inside, it is the content's first child: placed over the
+            // indent, it comes first in document order too, so a selection
+            // copies "1." before its item's text, and a screen reader reads
+            // it first.
+            let content = self.blocks(content.child(inside), &item.children, &key, tail && i + 1 == n);
             self.part(row, Part::ListItem)
                 .child(before)
-                .child(self.part(content.child(inside), Part::ListItemContent))
+                .child(self.part(content, Part::ListItemContent))
         });
         self.list_depth.set(depth.saturating_add(1));
         let rows: Vec<_> = rows.collect();

@@ -238,10 +238,56 @@ final class Mounter {
     /** Selectable views (`ViewProps.selectable_view`), by view. */
     private final SparseArray<SelectableView> selectableViews = new SparseArray<>();
 
-    /** A finger went down at the screen point: a selection elsewhere ends. */
+    /**
+     * A finger went down off the selection's handles while something is selected: if it lifts without
+     * moving past the touch slop (a tap), the selection ends; a drag (a scroll) keeps it, as TextView's.
+     */
+    private boolean tapEndsSelection;
+    private float tapX, tapY;
+
+    /** A finger went down at the screen point: a tap away from the selection will end it ({@link #touchUp}). */
     void touchDown(float rawX, float rawY) {
-        if (selectedText != null && !selectedText.selectionContains(rawX, rawY)) selectedText.clearSelection();
-        if (selectedArea != null && !selectedArea.selectionContains(rawX, rawY)) selectedArea.clear();
+        tapEndsSelection = (selectedText != null && !selectedText.selectionContains(rawX, rawY))
+                || (selectedArea != null && !selectedArea.selectionContains(rawX, rawY));
+        tapX = rawX;
+        tapY = rawY;
+    }
+
+    /** The finger moved: past the slop it is no tap, and the selection stays. */
+    void touchMoved(float rawX, float rawY, float slop) {
+        if (tapEndsSelection && Math.hypot(rawX - tapX, rawY - tapY) > slop) tapEndsSelection = false;
+    }
+
+    /** The gesture ended ({@code tap}: lifted, not cancelled): a tap ends the selection. */
+    void touchUp(boolean tap) {
+        if (!tapEndsSelection) return;
+        tapEndsSelection = false;
+        if (!tap) return;
+        if (selectedText != null) selectedText.clearSelection();
+        if (selectedArea != null) selectedArea.clear();
+    }
+
+    /** Whether a text or a selectable view holds a selection (back ends it first). */
+    boolean hasSelection() {
+        return selectedText != null || selectedArea != null;
+    }
+
+    /** Ends the selection there is; false when there is none. */
+    private boolean endSelection() {
+        if (selectedArea != null) {
+            selectedArea.clear();
+            return true;
+        }
+        if (selectedText != null) {
+            selectedText.clearSelection();
+            return true;
+        }
+        return false;
+    }
+
+    /** A long press made a new selection: the gesture that made it does not end it. */
+    void keepSelection() {
+        tapEndsSelection = false;
     }
 
     /** The outermost selectable view {@code text} is in (an area inside another is part of it), or null. */
@@ -2077,7 +2123,7 @@ final class Mounter {
      * by asking JS: the system asks synchronously.
      */
     boolean wantsBack() {
-        if (!shownModals.isEmpty()) return true;
+        if (!shownModals.isEmpty() || hasSelection()) return true;
         return backStack() != null || wants(1, Native.BACK_PRESS);
     }
 
@@ -2132,6 +2178,8 @@ final class Mounter {
      * listeners hear it (and send {@code Command::Back} when none takes it),
      * else the innermost stack pops. Returns false if nothing did. */
     boolean handleBack() {
+        // A selection goes first, as TextView's: back ends it and goes no further.
+        if (endSelection()) return true;
         if (!shownModals.isEmpty()) {
             shownModals.get(shownModals.size() - 1).backPressed();
             return true;
